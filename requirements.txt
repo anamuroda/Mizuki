@@ -12,3 +12,4 @@ aiohttp
 streamlit
 plotly
 fake-useragent
+discord.py
