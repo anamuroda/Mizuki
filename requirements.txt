@@ -1,0 +1,5 @@
+playwright
+playwright-stealth
+sqlalchemy
+beautifulsoup4
+aiofiles
