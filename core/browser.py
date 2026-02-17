@@ -1,65 +1,96 @@
 import asyncio
 import random
+import os
 from playwright.async_api import async_playwright
+from tenacity import retry, stop_after_attempt, wait_exponential, before_sleep_log
+from fake_useragent import UserAgent
 from .stealth import stealth_async
-from .evasions import clean_popups_and_overlays
+from .logger import logger
+import logging
 
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-]
+# (Pilar 1) Proxy Rotation: Configure no .env
+PROXY_SERVER = os.getenv("PROXY_SERVER", None) 
 
 class MizukiBrowser:
-    async def get_page_content(self, url):
+    def __init__(self):
+        self.ua = UserAgent()
+
+    async def human_behavior(self, page):
+        """(Pilar 1) Simulação de Comportamento Humano"""
+        # Movimento de mouse (Curvas de Bézier simuladas)
+        await page.mouse.move(random.randint(100, 500), random.randint(100, 500))
+        
+        # Delay aleatório (nunca exato)
+        await asyncio.sleep(random.uniform(0.8, 1.5))
+        
+        # Scroll "Preguiçoso"
+        for _ in range(random.randint(2, 5)):
+            await page.mouse.wheel(0, random.randint(300, 700))
+            await asyncio.sleep(random.uniform(1.0, 3.0))
+            # Sobe um pouco (comportamento de leitura)
+            if random.random() < 0.3:
+                await page.mouse.wheel(0, -random.randint(50, 200))
+
+    # (Pilar 4) Retry Logic: Tenta 3 vezes com espera exponencial
+    @retry(
+        stop=stop_after_attempt(3), 
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        before_sleep=before_sleep_log(logger, logging.WARNING)
+    )
+    async def fetch_page(self, url):
         async with async_playwright() as p:
-            # Mantive headless=False para você ver acontecendo (debug)
-            # Mude para True quando estiver confiante
-            browser = await p.chromium.launch(
-                headless=False, 
-                args=["--disable-blink-features=AutomationControlled", "--start-maximized"]
-            )
+            launch_args = {
+                "headless": False,  # Mude para True se não quiser ver a janela
+                "args": [
+                    "--disable-blink-features=AutomationControlled", 
+                    "--no-sandbox", 
+                    "--disable-infobars",
+                    "--window-size=1920,1080"
+                ]
+            }
             
+            if PROXY_SERVER:
+                launch_args["proxy"] = {"server": PROXY_SERVER}
+
+            browser = await p.chromium.launch(**launch_args)
+            
+            # (Pilar 1) Rotação de Fingerprint (UA, Timezone, Locale)
+            random_ua = self.ua.random
             context = await browser.new_context(
-                user_agent=random.choice(USER_AGENTS),
-                viewport={'width': 1366, 'height': 768},
-                locale='pt-BR'
+                user_agent=random_ua,
+                viewport={'width': 1920, 'height': 1080},
+                locale='pt-BR',
+                timezone_id='America/Sao_Paulo',
+                permissions=['geolocation']
             )
             
             page = await context.new_page()
+            
+            # (Pilar 1) Stealth Manual (WebGL, Canvas, etc)
             await stealth_async(page)
 
             try:
-                print(f"--> Navegando: {url}")
-                await page.goto(url, timeout=90000, wait_until='domcontentloaded')
+                logger.info(f"Navegando para: {url}...")
+                await page.goto(url, timeout=60000, wait_until='domcontentloaded')
                 
-                # Scroll lento para ativar Lazy Loading (Imagens e Preços dinâmicos)
-                for _ in range(3):
-                    await page.evaluate("window.scrollBy(0, 500)")
-                    await asyncio.sleep(1)
+                await self.human_behavior(page)
                 
-                # Tenta esperar por SELETORES DE PREÇO comuns em farmácias
-                # Isso força o bot a esperar até que o preço apareça na tela
-                try:
-                    # Lista de seletores genéricos de preço usados em e-commerces
-                    await page.wait_for_selector(
-                        "div[class*='price'], span[class*='price'], p[class*='price'], .product-price", 
-                        timeout=5000, 
-                        state='visible'
-                    )
-                except:
-                    print("⚠️ Aviso: Elemento de preço explícito não detectado via CSS (tentando extração bruta)")
-
-                await clean_popups_and_overlays(page)
-                
-                # Screenshot de Debug (Fundamental para ver o que deu errado)
-                await page.screenshot(path=f"debug_{random.randint(100,999)}.png")
+                # (Pilar 1) Lógica de Captcha (Placeholder)
+                if "captcha" in page.url or await page.locator("iframe[src*='captcha']").count() > 0:
+                    logger.warning("Captcha detectado! Tentando resolver...")
+                    # Aqui entraria a integração com 2Captcha/CapSolver
+                    # await solve_captcha(page)
+                    await asyncio.sleep(5) 
 
                 content = await page.content()
-                return {"status": "success", "html": content, "url": url}
+                return {"status": "success", "html": content}
 
             except Exception as e:
-                print(f"X-- Erro crítico em {url}: {e}")
-                return {"status": "error", "html": str(e), "url": url}
+                # (Pilar 4) Screenshot de Erro
+                filename = f"screenshots/error_{random.randint(1000,9999)}.png"
+                await page.screenshot(path=filename)
+                logger.error(f"Erro ao acessar {url}. Screenshot salvo em {filename}. Erro: {e}")
+                raise e 
             
             finally:
                 await browser.close()

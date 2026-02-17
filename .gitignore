@@ -1,11 +1,28 @@
+# --- Ambiente & Dependências ---
 venv/
 env/
-*.db
-*.sqlite3
 __pycache__/
 *.pyc
-debug_*.png
-debug_error.png
+
+# --- Dados Sensíveis & Configuração ---
 .env
+*.env
+
+# --- Banco de Dados Local (Não versione binários) ---
+*.db
+*.sqlite3
+mizuki.db
+
+# --- Arquivos de Execução (Logs e Prints) ---
 logs/
+*.log
+screenshots/
+*.png
+
+# --- Mac/Windows Junk ---
+.DS_Store
+Thumbs.db
+
+# --- IDEs ---
 .vscode/
+.idea/

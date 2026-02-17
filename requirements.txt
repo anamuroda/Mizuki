@@ -3,3 +3,12 @@ playwright-stealth
 sqlalchemy
 beautifulsoup4
 aiofiles
+apscheduler
+tenacity
+pandas
+prophet
+python-dotenv
+aiohttp
+streamlit
+plotly
+fake-useragent
