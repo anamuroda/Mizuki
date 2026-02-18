@@ -1,64 +1,77 @@
+# core/scheduler.py
 from database.connection import SessionLocal
-from database.models import TargetURL, ScrapingResult
+from database.models import Product, PriceHistory, Category, AvailabilityStatus
 from core.browser import MizukiBrowser
 from parsers.extractor import extract_hybrid
+from core.normalization import classify_product
 from core.intelligence import forecast_price
 from core.logger import logger
+from interface.discord_bot import send_discord_notification
 import asyncio
 
-# Importa a função que criamos acima
-from interface.discord_bot import send_discord_notification
-
 async def job_routine():
-    logger.info("⏰ Iniciando rotina de verificação...")
+    logger.info("⏰ Iniciando rotina de inteligência...")
     db = SessionLocal()
-    targets = db.query(TargetURL).filter(TargetURL.active == True).all()
-    db.close()
-
-    if not targets: 
-        logger.info("Nenhum alvo ativo.")
+    
+    # Busca produtos ativos
+    products = db.query(Product).filter(Product.active == True).all()
+    
+    if not products: 
+        logger.info("Nenhum produto para monitorar.")
+        db.close()
         return
 
     browser = MizukiBrowser()
-    
-    # REMOVIDO: get_market_context() (Não existe no seu intelligence.py)
 
-    for target in targets:
+    for product in products:
         try:
-            logger.info(f"Escaneando: {target.url}")
-            res = await browser.fetch_page(target.url)
+            logger.info(f"Analisando: {product.url}")
+            res = await browser.fetch_page(product.url)
+            
+            # Extração
             price, available, method = extract_hybrid(res['html'])
             
-            if price > 0:
-                # Salva histórico
-                db = SessionLocal()
+            # Atualiza dados em tempo real no Produto
+            product.price_current = price
+            product.availability_status = AvailabilityStatus.IN_STOCK if available else AvailabilityStatus.OUT_OF_STOCK
+            
+            # (Ponto 3) Auto-Correção Semântica
+            # Se o nome ainda for o placeholder, tenta extrair do HTML (ex: Title) e classificar
+            if product.product_name == "Aguardando Scan...":
+                # Lógica simples para extrair título (pode melhorar no extractor.py)
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(res['html'], 'html.parser')
+                title = soup.title.string.strip() if soup.title else "Produto Desconhecido"
+                product.product_name = title
                 
-                # Se for o primeiro scan e o nome for genérico, tenta atualizar (opcional)
-                if "Aguardando Scan" in target.product_name:
-                    # Aqui você poderia adicionar lógica para pegar o <title>
-                    pass 
+                # Classifica Categoria automaticamente
+                cat_name = classify_product(title)
+                category = db.query(Category).filter_by(name=cat_name).first()
+                if category:
+                    product.category_id = category.id
+                    logger.info(f"🧬 Classificado como: {cat_name}")
 
-                db.add(ScrapingResult(target_id=target.id, price=price, available=available, method=method))
-                db.commit()
-                db.close()
-                
-                # Inteligência
-                ai_msg = forecast_price(target.id)
+            # (Ponto 6) Grava Histórico (Série Temporal)
+            history_entry = PriceHistory(
+                product_id=product.id,
+                price=price,
+                availability=available
+            )
+            db.add(history_entry)
+            
+            # Notificação (Mantendo compatibilidade)
+            should_notify = False
+            if product.target_price and price > 0 and price <= product.target_price:
+                should_notify = True
+            
+            if should_notify and product.discord_channel_id:
+                ai_msg = forecast_price(product.id) # Nota: forecast_price precisará de ajuste leve para ler PriceHistory
+                await send_discord_notification(product, price, ai_msg)
 
-                # Lógica de Notificação
-                should_notify = False
-                
-                # 1. Se tem meta de preço e atingiu
-                if target.target_price and price <= target.target_price:
-                    should_notify = True
-                # 2. Se não tem meta (apenas monitoramento)
-                elif not target.target_price:
-                    should_notify = True
-                
-                # CORREÇÃO: Usar discord_channel_id em vez de discord_user_id
-                if should_notify and target.discord_channel_id:
-                    # Removemos o market_ctx pois ele não existe no intelligence.py atual
-                    await send_discord_notification(target, price, ai_msg)
+            db.commit()
 
         except Exception as e:
-            logger.error(f"Erro ao processar {target.url}: {e}")
+            logger.error(f"Erro ao processar {product.url}: {e}")
+            db.rollback()
+    
+    db.close()
